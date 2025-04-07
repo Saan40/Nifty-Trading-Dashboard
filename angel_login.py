@@ -1,12 +1,16 @@
+import os
+from dotenv import load_dotenv
 from smartapi.smartConnect import SmartConnect
 import pyotp
 
+# Load environment variables from .env file
+load_dotenv()
+
 def angel_login():
-    # === Fill in your Angel One API details here ===
-    api_key = "6z7qhWH4"
-    client_id = "S1645433"       # e.g., "X12345"
-    password = "8876"         # Angel One login password
-    totp_secret = "CVJXSB4UTU5G7W662POTNI7GMU"   # The 16-digit key used in Google Authenticator
+    api_key = os.getenv("ANGEL_API_KEY")
+    client_id = os.getenv("ANGEL_CLIENT_ID")
+    password = os.getenv("ANGEL_PASSWORD")
+    totp_secret = os.getenv("ANGEL_TOTP")
 
     try:
         obj = SmartConnect(api_key=api_key)
@@ -14,15 +18,10 @@ def angel_login():
         # Generate TOTP
         totp = pyotp.TOTP(totp_secret).now()
 
-        # Generate session and get tokens
+        # Generate session and get token
         session_data = obj.generateSession(client_id, password, totp)
-
-        access_token = session_data['data']['access_token']
-        feed_token = obj.getfeedToken()
-
-        print("[+] Angel One Login Successful")
-        return obj, access_token, feed_token
+        return obj, session_data
 
     except Exception as e:
-        print("[-] Login failed:", str(e))
-        return None, None, None
+        print("Login failed:", e)
+        return None, None
