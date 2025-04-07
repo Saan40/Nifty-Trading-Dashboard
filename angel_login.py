@@ -1,80 +1,68 @@
 import os
-from SmartApi import SmartConnect
 import pyotp
+import pandas as pd
+from SmartApi import SmartConnect
 from dotenv import load_dotenv
 
-# Load environment variables
 load_dotenv()
 
-# Read env vars
 API_KEY = os.getenv("API_KEY")
 CLIENT_CODE = os.getenv("CLIENT_CODE")
 PASSWORD = os.getenv("PASSWORD")
-TOTP_SECRET = os.getenv("TOTP")
+TOTP_SECRET = os.getenv("TOTP_SECRET")
 
-# Debugging (Optional: Remove in production)
-print("API_KEY:", bool(API_KEY))
-print("CLIENT_CODE:", bool(CLIENT_CODE))
-print("PASSWORD:", bool(PASSWORD))
-print("TOTP_SECRET:", bool(TOTP_SECRET))
-
-# Check if all required env vars are present
 if not all([API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET]):
-    raise ValueError("Missing one or more environment variables. Please check API_KEY, CLIENT_CODE, PASSWORD, or TOTP.")
+    raise ValueError("Missing one or more environment variables (API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET).")
 
 # Generate 6-digit TOTP from 26-digit secret
 totp = pyotp.TOTP(TOTP_SECRET).now()
 
-# Create SmartAPI connection
 obj = SmartConnect(api_key=API_KEY)
 
-# Try to login
-try:
-    data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
-except Exception as e:
-    raise Exception(f"Login failed: {e}")
+# Login session
+data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
 
-# Validate login response
-if not data or not isinstance(data, dict):
-    raise Exception(f"Login returned invalid response: {data}")
-
-# Extract tokens
-try:
-    auth_token = data['data']['jwtToken']
-    refresh_token = data['data']['refreshToken']
-    feed_token = obj.getfeedToken()
-except (KeyError, TypeError):
+if not data or 'data' not in data or 'jwtToken' not in data['data']:
     raise Exception(f"Token fields missing in login response: {data}")
 
-# Utility functions
-def get_instrument_token(instruments_df, symbol):
-    row = instruments_df[instruments_df['symbol'] == symbol]
+auth_token = data['data']['jwtToken']
+refresh_token = data['data']['refreshToken']
+feed_token = obj.getfeedToken()
+
+# Load instruments file
+instruments_df = pd.read_csv("instruments.csv")
+
+# Get token for symbol
+def get_instrument_token(df, symbol):
+    row = df[df['tradingsymbol'].str.upper() == symbol.upper()]
     if not row.empty:
         return int(row.iloc[0]['token'])
-    return None
+    raise ValueError(f"Token not found for symbol: {symbol}")
 
-def get_ltp(symbol, exchange="NSE", symbol_token=None):
-    params = {
-        "exchange": exchange,
-        "tradingsymbol": symbol,
-        "symboltoken": symbol_token
-    }
+# Get LTP
+def get_ltp(token):
     try:
-        return obj.ltpData(params)
+        ltp_data = obj.ltpData("NSE", "NIFTY", token)
+        return ltp_data['data']['ltp']
     except Exception as e:
-        print(f"LTP fetch failed: {e}")
-        return None
+        return f"Error: {e}"
 
-def get_historical_data(symbol_token, interval, from_date, to_date):
-    params = {
-        "exchange": "NSE",
-        "symboltoken": symbol_token,
-        "interval": interval,
-        "fromdate": from_date,
-        "todate": to_date
-    }
+# Get historical data
+def get_historical_data(token, interval="5minute", days=2):
+    from datetime import datetime, timedelta
+    end = datetime.now()
+    start = end - timedelta(days=days)
     try:
-        return obj.getCandleData(params)
+        historical_params = {
+            "exchange": "NSE",
+            "symboltoken": str(token),
+            "interval": interval,
+            "fromdate": start.strftime('%Y-%m-%d %H:%M'),
+            "todate": end.strftime('%Y-%m-%d %H:%M')
+        }
+        data = obj.getCandleData(historical_params)
+        df = pd.DataFrame(data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        return df
     except Exception as e:
-        print(f"Historical data fetch failed: {e}")
-        return None
+        return pd.DataFrame()
