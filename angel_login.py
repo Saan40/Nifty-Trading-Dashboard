@@ -1,27 +1,33 @@
 import os
-from dotenv import load_dotenv
 from SmartApi import SmartConnect
-import pyotp
+from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
-def angel_login():
-    api_key = os.getenv("ANGEL_API_KEY")
-    client_id = os.getenv("ANGEL_CLIENT_ID")
-    password = os.getenv("ANGEL_PASSWORD")
-    totp_secret = os.getenv("ANGEL_TOTP")
+API_KEY = os.getenv("ANGEL_API_KEY")
+CLIENT_CODE = os.getenv("ANGEL_CLIENT_ID")
+PASSWORD = os.getenv("ANGEL_PASSWORD")
+TOTP = os.getenv("ANGEL_TOTP")
 
-    try:
-        obj = SmartConnect(api_key=api_key)
+obj = SmartConnect(api_key=API_KEY)
+data = obj.generateSession(CLIENT_CODE, PASSWORD, TOTP)
+auth_token = data['data']['jwtToken']
 
-        # Generate TOTP
-        totp = pyotp.TOTP(totp_secret).now()
+def get_instrument_token(symbol: str, exchange: str = "NSE") -> str:
+    instruments = obj.getProfile()
+    # For simplicity, returning a fake token — update with real token logic
+    return "101"  # Replace with actual lookup logic
 
-        # Generate session and get token
-        session_data = obj.generateSession(client_id, password, totp)
-        return obj, session_data
+def get_ltp(symbol: str, exchange: str = "NSE") -> float:
+    data = obj.ltpData(exchange, symbol, symbol)
+    return data["data"]["ltp"]
 
-    except Exception as e:
-        print("Login failed:", e)
-        return None, None
+def get_historical_data(token, interval, from_date, to_date):
+    params = {
+        "exchange": "NSE",
+        "symboltoken": token,
+        "interval": interval,
+        "fromdate": from_date,
+        "todate": to_date
+    }
+    return obj.getCandleData(params)
