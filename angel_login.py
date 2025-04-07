@@ -7,7 +7,7 @@ load_dotenv()
 API_KEY = os.getenv("API_KEY")
 CLIENT_CODE = os.getenv("CLIENT_CODE")
 PASSWORD = os.getenv("PASSWORD")
-TOTP = os.getenv("TOTP")
+TOTP = os.getenv("CVJXSB4UTU5G7W662POTNI7GMU")
 
 # Validate env vars
 if not all([API_KEY, CLIENT_CODE, PASSWORD, TOTP]):
