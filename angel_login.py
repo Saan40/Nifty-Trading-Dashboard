@@ -9,20 +9,27 @@ CLIENT_CODE = os.getenv("CLIENT_CODE")
 PASSWORD = os.getenv("PASSWORD")
 TOTP = os.getenv("TOTP")
 
+# Validate env vars
 if not all([API_KEY, CLIENT_CODE, PASSWORD, TOTP]):
-    raise Exception("One or more environment variables are missing.")
+    raise ValueError("Missing one or more environment variables.")
 
+# Create connection object
 obj = SmartConnect(api_key=API_KEY)
 
+# Try login
 try:
     data = obj.generateSession(CLIENT_CODE, PASSWORD, TOTP)
 except Exception as e:
     raise Exception(f"Login failed: {e}")
 
-# Validate response structure
-if not isinstance(data, dict) or 'data' not in data or 'jwtToken' not in data['data']:
-    raise Exception(f"Invalid login response: {data}")
+# Validate response
+if not data or not isinstance(data, dict):
+    raise Exception(f"Login returned invalid response: {data}")
 
-auth_token = data['data']['jwtToken']
-refresh_token = data['data']['refreshToken']
-feed_token = obj.getfeedToken()
+# Check token
+try:
+    auth_token = data['data']['jwtToken']
+    refresh_token = data['data']['refreshToken']
+    feed_token = obj.getfeedToken()
+except (KeyError, TypeError):
+    raise Exception(f"Token fields missing in login response: {data}")
