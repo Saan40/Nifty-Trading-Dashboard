@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from smartapi import SmartConnect
+from SmartApi import SmartConnect
 import pyotp
 
 # Load environment variables from .env file
