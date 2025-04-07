@@ -1,43 +1,26 @@
 import pandas as pd
-import ta
+import talib
 
 def calculate_indicators(df):
-    df['rsi'] = ta.momentum.RSIIndicator(df['close']).rsi()
-    df['macd'] = ta.trend.MACD(df['close']).macd_diff()
-    df['atr'] = ta.volatility.AverageTrueRange(df['high'], df['low'], df['close']).average_true_range()
+    df["EMA_20"] = talib.EMA(df["close"], timeperiod=20)
+    df["EMA_50"] = talib.EMA(df["close"], timeperiod=50)
+    df["RSI"] = talib.RSI(df["close"], timeperiod=14)
+    macd, macdsignal, _ = talib.MACD(df["close"], fastperiod=12, slowperiod=26, signalperiod=9)
+    df["MACD"] = macd
+    df["MACD_signal"] = macdsignal
     return df
 
 def identify_candlestick_patterns(df):
-    patterns = []
-
-    for i in range(2, len(df)):
-        prev = df.iloc[i - 1]
-        curr = df.iloc[i]
-        if (
-            prev['close'] < prev['open'] and
-            curr['close'] > curr['open'] and
-            curr['close'] > prev['open'] and
-            curr['open'] < prev['close']
-        ):
-            patterns.append('bullish_engulfing')
-        elif (
-            prev['close'] > prev['open'] and
-            curr['close'] < curr['open'] and
-            curr['close'] < prev['open'] and
-            curr['open'] > prev['close']
-        ):
-            patterns.append('bearish_engulfing')
-        else:
-            patterns.append('')
-    patterns = [''] * 2 + patterns
-    df['pattern'] = patterns
+    df["pattern"] = None
+    df["pattern"] = talib.CDLHAMMER(df["open"], df["high"], df["low"], df["close"])
+    df["pattern"] = df["pattern"].apply(lambda x: "Hammer" if x > 0 else None)
     return df
 
 def generate_signal(df):
-    last = df.iloc[-1]
-    signal = ''
-    if last['pattern'] == 'bullish_engulfing' and last['rsi'] < 70 and last['macd'] > 0:
-        signal = 'CALL'
-    elif last['pattern'] == 'bearish_engulfing' and last['rsi'] > 30 and last['macd'] < 0:
-        signal = 'PUT'
-    return signal
+    latest = df.iloc[-1]
+    if latest["RSI"] < 30 and latest["MACD"] > latest["MACD_signal"] and latest["pattern"] == "Hammer":
+        return "CALL"
+    elif latest["RSI"] > 70 and latest["MACD"] < latest["MACD_signal"]:
+        return "PUT"
+    else:
+        return "HOLD"
