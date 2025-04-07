@@ -5,3 +5,4 @@ pyotp
 pandas
 numpy
 requests
+ta
