@@ -1,26 +1,19 @@
 import pandas as pd
-import talib
+import requests
 
-def calculate_indicators(df):
-    df["EMA_20"] = talib.EMA(df["close"], timeperiod=20)
-    df["EMA_50"] = talib.EMA(df["close"], timeperiod=50)
-    df["RSI"] = talib.RSI(df["close"], timeperiod=14)
-    macd, macdsignal, _ = talib.MACD(df["close"], fastperiod=12, slowperiod=26, signalperiod=9)
-    df["MACD"] = macd
-    df["MACD_signal"] = macdsignal
-    return df
+# Angel One instrument list URL (FnO)
+url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
 
-def identify_candlestick_patterns(df):
-    df["pattern"] = None
-    df["pattern"] = talib.CDLHAMMER(df["open"], df["high"], df["low"], df["close"])
-    df["pattern"] = df["pattern"].apply(lambda x: "Hammer" if x > 0 else None)
-    return df
+print("Downloading instruments list from Angel One...")
+response = requests.get(url)
+data = response.json()
 
-def generate_signal(df):
-    latest = df.iloc[-1]
-    if latest["RSI"] < 30 and latest["MACD"] > latest["MACD_signal"] and latest["pattern"] == "Hammer":
-        return "CALL"
-    elif latest["RSI"] > 70 and latest["MACD"] < latest["MACD_signal"]:
-        return "PUT"
-    else:
-        return "HOLD"
+# Convert to DataFrame
+df = pd.DataFrame(data)
+
+# Optional: filter only NIFTY and BANKNIFTY if needed
+fno_df = df[df["name"].isin(["NIFTY", "BANKNIFTY"])]
+
+# Save to CSV
+fno_df.to_csv("instruments.csv", index=False)
+print("instruments.csv generated with", len(fno_df), "rows.")
