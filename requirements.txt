@@ -1,10 +1,7 @@
 streamlit
 smartapi-python
+python-dotenv
 pyotp
 pandas
 numpy
 requests
-matplotlib
-ta
-scikit-learn
-python-dotenv
