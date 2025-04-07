@@ -1,68 +1,83 @@
-import os
-import pyotp
-import pandas as pd
 from SmartApi import SmartConnect
 from dotenv import load_dotenv
+import pandas as pd
+import pyotp
+import os
+import requests
 
 load_dotenv()
 
+# Environment Variables
 API_KEY = os.getenv("API_KEY")
 CLIENT_CODE = os.getenv("CLIENT_CODE")
 PASSWORD = os.getenv("PASSWORD")
 TOTP_SECRET = os.getenv("TOTP_SECRET")
 
+# Validate
 if not all([API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET]):
-    raise ValueError("Missing one or more environment variables (API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET).")
+    raise ValueError("Missing one or more environment variables.")
 
-# Generate 6-digit TOTP from 26-digit secret
-totp = pyotp.TOTP(TOTP_SECRET).now()
-
+# Create SmartConnect object
 obj = SmartConnect(api_key=API_KEY)
 
-# Login session
-data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
+# Generate TOTP
+totp = pyotp.TOTP(TOTP_SECRET).now()
 
-if not data or 'data' not in data or 'jwtToken' not in data['data']:
-    raise Exception(f"Token fields missing in login response: {data}")
+# Login
+try:
+    data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
+except Exception as e:
+    raise Exception(f"Login failed: {e}")
 
-auth_token = data['data']['jwtToken']
-refresh_token = data['data']['refreshToken']
-feed_token = obj.getfeedToken()
+# Get tokens
+try:
+    auth_token = data["data"]["jwtToken"]
+    refresh_token = data["data"]["refreshToken"]
+    feed_token = obj.getfeedToken()
+except Exception as e:
+    raise Exception("Token extraction failed: " + str(e))
 
-# Load instruments file
+# Download instruments.csv if not exists
+if not os.path.exists("instruments.csv"):
+    print("Downloading instruments.csv...")
+    url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    response = requests.get(url)
+    instruments = response.json()
+    df = pd.DataFrame(instruments)
+    df.to_csv("instruments.csv", index=False)
+    print("Saved instruments.csv")
+
+# Load instruments
 instruments_df = pd.read_csv("instruments.csv")
 
-# Get token for symbol
+# Token fetch
 def get_instrument_token(df, symbol):
-    row = df[df['tradingsymbol'].str.upper() == symbol.upper()]
-    if not row.empty:
-        return int(row.iloc[0]['token'])
-    raise ValueError(f"Token not found for symbol: {symbol}")
+    symbol_row = df[df["symbol"] == symbol]
+    if not symbol_row.empty:
+        return int(symbol_row.iloc[0]["token"])
+    raise Exception(f"Token not found for symbol: {symbol}")
 
-# Get LTP
-def get_ltp(token):
-    try:
-        ltp_data = obj.ltpData("NSE", "NIFTY", token)
-        return ltp_data['data']['ltp']
-    except Exception as e:
-        return f"Error: {e}"
+# Historical data
+def get_historical_data(token, interval="5minute", duration="1", exchange="NSE"):
+    params = {
+        "exchange": exchange,
+        "symboltoken": str(token),
+        "interval": interval,
+        "fromdate": pd.Timestamp.now() - pd.Timedelta(days=int(duration)),
+        "todate": pd.Timestamp.now()
+    }
+    response = obj.getCandleData(params)
+    candles = response["data"]
+    df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df
 
-# Get historical data
-def get_historical_data(token, interval="5minute", days=2):
-    from datetime import datetime, timedelta
-    end = datetime.now()
-    start = end - timedelta(days=days)
-    try:
-        historical_params = {
-            "exchange": "NSE",
-            "symboltoken": str(token),
-            "interval": interval,
-            "fromdate": start.strftime('%Y-%m-%d %H:%M'),
-            "todate": end.strftime('%Y-%m-%d %H:%M')
-        }
-        data = obj.getCandleData(historical_params)
-        df = pd.DataFrame(data['data'], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-        return df
-    except Exception as e:
-        return pd.DataFrame()
+# LTP
+def get_ltp(token, exchange="NSE", symbol="NIFTY"):
+    params = {
+        "exchange": exchange,
+        "symboltoken": str(token),
+        "symbol": symbol
+    }
+    response = obj.ltpData(params)
+    return response["data"]["ltp"]
