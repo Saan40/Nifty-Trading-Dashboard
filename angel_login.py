@@ -1,46 +1,53 @@
-angel_login.py
-
-import os import pyotp import pandas as pd from SmartApi.smartConnect import SmartConnect from dotenv import load_dotenv
+import os
+import pyotp
+import json
+import pandas as pd
+from datetime import datetime, timedelta
+from SmartApi.smartConnect import SmartConnect
+from dotenv import load_dotenv
 
 load_dotenv()
 
-Load environment variables
+# Load credentials from environment variables
+API_KEY = os.getenv("API_KEY")
+CLIENT_CODE = os.getenv("CLIENT_CODE")
+PASSWORD = os.getenv("PASSWORD")
+TOTP_SECRET = os.getenv("TOTP_SECRET")
 
-API_KEY = os.getenv("API_KEY") CLIENT_CODE = os.getenv("CLIENT_CODE") PASSWORD = os.getenv("PASSWORD") TOTP_SECRET = os.getenv("TOTP_SECRET")
+if not all([API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET]):
+    raise ValueError("Missing one or more environment variables.")
 
-if not all([API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET]): raise ValueError("Missing one or more environment variables.")
-
-Generate TOTP
-
+# Login
+obj = SmartConnect(api_key=API_KEY)
 totp = pyotp.TOTP(TOTP_SECRET).now()
+data = obj.generateSession(CLIENT_CODE, PASSWORD, totp)
 
-Login to Angel One
-
-obj = SmartConnect(api_key=API_KEY) data = obj.generateSession(CLIENT_CODE, PASSWORD, totp) refreshToken = data["data"]["refreshToken"] feedToken = obj.getfeedToken()
-
-Load instrument data
-
+# Load instruments
+if not os.path.exists("instruments.csv"):
+    raise FileNotFoundError("instruments.csv not found. Please upload it.")
 instruments_df = pd.read_csv("instruments.csv")
 
-Utility Functions
+def get_instrument_token(instruments_df, symbol):
+    row = instruments_df[(instruments_df["symbol"].str.contains(symbol)) & 
+                         (instruments_df["exchange"] == "NFO") &
+                         (instruments_df["instrumenttype"] == "FUT")]
+    if not row.empty:
+        return int(row.iloc[0]["token"])
+    else:
+        raise ValueError(f"Instrument token not found for {symbol}")
 
-def get_instrument_token(df, symbol): try: token = df[df["symbol"] == symbol]["token"].values[0] return token except IndexError: raise ValueError(f"Token for symbol '{symbol}' not found in instruments.csv")
+def get_ltp(token):
+    return obj.ltpData("NFO", token)["data"]["ltp"]
 
-def get_historical_data(token, interval="5minute", duration="1", exchange="NSE"): to_date = pd.Timestamp.now() from_date = to_date - pd.Timedelta(days=int(duration))
-
-params = {
-    "exchange": exchange,
-    "symboltoken": str(token),
-    "interval": interval,
-    "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
-    "todate": to_date.strftime("%Y-%m-%d %H:%M")
-}
-
-response = obj.getCandleData(params)
-candles = response["data"]
-df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
-df["timestamp"] = pd.to_datetime(df["timestamp"])
-return df
-
-def get_ltp(token, exchange="NSE"): ltp_data = obj.ltpData(exchange, "OPTIDX", str(token)) return ltp_data["data"]["ltp"]
-
+def get_historical_data(token, interval="5minute", days=5):
+    end_time = datetime.now()
+    start_time = end_time - timedelta(days=days)
+    params = {
+        "exchange": "NFO",
+        "symboltoken": str(token),
+        "interval": interval,
+        "fromdate": start_time.strftime("%Y-%m-%d %H:%M"),
+        "todate": end_time.strftime("%Y-%m-%d %H:%M")
+    }
+    # Fix: convert datetime to string before passing
+    return pd.DataFrame(obj.getCandleData(params)["data"], columns=["timestamp", "open", "high", "low", "close", "volume"])
