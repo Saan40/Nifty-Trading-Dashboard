@@ -5,54 +5,71 @@ from SmartApi.smartConnect import SmartConnect
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 
-# Load .env environment variables
+# Load environment variables
 load_dotenv()
 
-# Load credentials from environment
-API_KEY = os.getenv("API_KEY")
 CLIENT_CODE = os.getenv("CLIENT_CODE")
 PASSWORD = os.getenv("PASSWORD")
-TOTP_SECRET = os.getenv("TOTP_SECRET")  # This must be the 26-character base32 secret
+TOTP_SECRET = os.getenv("TOTP_SECRET")
+API_KEY = os.getenv("API_KEY")
 
-if not all([API_KEY, CLIENT_CODE, PASSWORD, TOTP_SECRET]):
-    raise ValueError("Missing one or more environment variables. Check your .env or Render settings.")
+if not all([CLIENT_CODE, PASSWORD, TOTP_SECRET, API_KEY]):
+    raise ValueError("Missing one or more environment variables.")
 
-# Generate TOTP from secret
-totp = pyotp.TOTP(TOTP_SECRET).now()
-
-# Login to Angel One SmartAPI
+# Login to Angel One API
 obj = SmartConnect(api_key=API_KEY)
-data = obj.generateSession(client_code=CLIENT_CODE, password=PASSWORD, totp=totp)
+token = pyotp.TOTP(TOTP_SECRET).now()
+data = obj.generateSession(CLIENT_CODE, PASSWORD, token)
 
-# Get instrument list
+# Download instrument list if not already present
+if not os.path.exists("instruments.csv"):
+    instrument_url = "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+    df = pd.read_json(instrument_url)
+    df = df[df['exchange'] == 'NSE']
+    df.to_csv("instruments.csv", index=False)
+
 instruments_df = pd.read_csv("instruments.csv")
 
 def get_instrument_token(df, symbol):
-    match = df[df['symbol'].str.contains(symbol, case=False, na=False)]
-    if not match.empty:
-        return int(match.iloc[0]['token'])
-    raise ValueError(f"Token not found for symbol: {symbol}")
+    row = df[df['symbol'].str.upper() == symbol.upper()]
+    if not row.empty:
+        return int(row.iloc[0]['token'])
+    else:
+        raise ValueError(f"Instrument token for {symbol} not found.")
 
-def get_historical_data(instrument_token, interval="5minute", days=5):
-    end_time = datetime.now()
-    start_time = end_time - timedelta(days=days)
+def get_historical_data(token, interval="5minute", days=5):
+    to_date = datetime.now()
+    from_date = to_date - timedelta(days=days)
 
     params = {
         "exchange": "NSE",
-        "symboltoken": str(instrument_token),
+        "symboltoken": str(token),
         "interval": interval,
-        "fromdate": start_time.strftime('%Y-%m-%d %H:%M'),
-        "todate": end_time.strftime('%Y-%m-%d %H:%M')
+        "fromdate": from_date.strftime('%Y-%m-%d %H:%M'),
+        "todate": to_date.strftime('%Y-%m-%d %H:%M')
     }
 
     response = obj.getCandleData(params)
-    data = response.get("data", [])
+    candles = response.get("data")
 
-    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df = df.sort_values("timestamp")
+    if not candles:
+        raise ValueError("No historical data found.")
+
+    df = pd.DataFrame(candles, columns=["datetime", "open", "high", "low", "close", "volume"])
+    df["datetime"] = pd.to_datetime(df["datetime"])
     return df
 
-def get_ltp(instrument_token):
-    ltp_data = obj.ltpData("NSE", "NIFTY", str(instrument_token))
-    return ltp_data.get("data", {}).get("ltp", 0.0)
+def get_ltp(token):
+    params = {
+        "exchange": "NSE",
+        "symboltoken": str(token),
+        "tradingsymbol": "",
+        "symbolname": "",
+        "instrumenttype": "",
+        "producttype": "",
+        "expirydate": "",
+        "strikeprice": "",
+        "optiontype": ""
+    }
+    ltp_data = obj.ltpData("NSE", str(token), "")
+    return ltp_data.get("data", {}).get("ltp", "N/A")
