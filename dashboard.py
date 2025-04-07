@@ -1,4 +1,4 @@
-6import streamlit as st
+import streamlit as st
 import pandas as pd
 import time
 from utils import calculate_indicators, identify_candlestick_patterns, generate_signal
