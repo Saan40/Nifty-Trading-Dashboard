@@ -44,44 +44,31 @@ def get_instrument_token(symbol, exchange):
         return None
 
 # Utility: Get historical candle data
-def get_historical_data(symbol, exchange, interval="FIVE_MINUTE", days=5):
-    token = get_instrument_token(symbol, exchange)
-    if not token:
-        return []
+def get_historical_data(token, interval, from_date, to_date, exchange="NSE"):
+    """
+    Fetch historical candle data from Angel One API.
 
-    to_date = datetime.now()
-    from_date = to_date - timedelta(days=days)
+    Args:
+        token (str): Symbol token.
+        interval (str): Interval string like 'ONE_MINUTE', 'FIFTEEN_MINUTE', etc.
+        from_date (datetime): Start datetime.
+        to_date (datetime): End datetime.
+        exchange (str, optional): Exchange name. Default is 'NSE'.
 
+    Returns:
+        dict: Historical candle data response from API.
+    """
     params = {
         "exchange": exchange,
-        "symboltoken": token,
+        "symboltoken": str(token),
         "interval": interval,
         "fromdate": from_date.strftime('%Y-%m-%d %H:%M'),
         "todate": to_date.strftime('%Y-%m-%d %H:%M')
     }
 
     try:
-        data = obj.getCandleData(params)
-        return data['data']
+        response = obj.getCandleData(params)
+        return response
     except Exception as e:
         print(f"Error fetching historical data: {e}")
-        return []
-
-# Utility: Get LTP
-def get_ltp(symbol, exchange):
-    token = get_instrument_token(symbol, exchange)
-    if not token:
-        return None
-
-    params = {
-        "exchange": exchange,
-        "tradingsymbol": symbol,
-        "symboltoken": token
-    }
-
-    try:
-        ltp_data = obj.ltpData(params)
-        return float(ltp_data['data']['ltp'])
-    except Exception as e:
-        print(f"Error fetching LTP: {e}")
         return None
