@@ -1,52 +1,51 @@
+# angel_login.py
+
 import os
 import pyotp
 import pandas as pd
 from SmartApi.smartConnect import SmartConnect
 from datetime import datetime, timedelta
 
-# ========== Load Environment Variables ==========
+# Load environment variables
 api_key = os.getenv("ANGEL_API_KEY")
 client_code = os.getenv("ANGEL_CLIENT_CODE")
 password = os.getenv("ANGEL_PASSWORD")
-totp_secret = os.getenv("ANGEL_TOTP_SECRET")  # 26-char secret key
+totp_secret = os.getenv("ANGEL_TOTP_SECRET")  # 26-digit secret
 
-# ========== Validate ==========
+# Validate all required env vars
 if not all([api_key, client_code, password, totp_secret]):
-    raise Exception("Missing one or more required environment variables.")
+    raise Exception("Missing one or more required environment variables: ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PASSWORD, ANGEL_TOTP_SECRET")
 
-# ========== Generate TOTP and Login ==========
+# Generate TOTP
 totp = pyotp.TOTP(totp_secret).now()
+
+# Create session
 obj = SmartConnect(api_key=api_key)
 session = obj.generateSession(client_code, password, totp)
 
-if not session or session.get("status") != True:
-    raise Exception(f"Login failed! Response: {session}")
+if not session or 'status' not in session or session['status'] != True:
+    raise Exception(f"Login failed: {session}")
 
 auth_token = session['data']['jwtToken']
 refresh_token = session['data']['refreshToken']
 feed_token = obj.getfeedToken()
 
-# ========== Load instruments.csv ==========
-try:
-    instruments_df = pd.read_csv("instruments.csv")
-except Exception as e:
-    raise Exception(f"Error reading instruments.csv: {e}")
+# Load instruments.csv
+instruments_df = pd.read_csv("instruments.csv")
 
-# ========== Token Lookup ==========
-def get_instrument_token(df, symbol, exchange="NSE"):
+# Get token using trading_symbol and exch_seg
+def get_instrument_token(symbol, exch_seg="NSE"):
     try:
-        df = df.astype(str)
-        match = df[(df["name"] == symbol) & (df["exchange"] == exchange)]
-        if match.empty:
-            print(f"[ERROR] Token not found for symbol: {symbol}, exchange: {exchange}")
-            print("Available symbols:", df["name"].unique()[:10])
-            return None
-        return str(match.iloc[0]["token"])
+        row = instruments_df[
+            (instruments_df["trading_symbol"].str.upper() == symbol.upper()) &
+            (instruments_df["exch_seg"].str.upper() == exch_seg.upper())
+        ].iloc[0]
+        return str(row["token"])
     except Exception as e:
-        print(f"[ERROR] Failed to get token for {symbol}: {e}")
+        print(f"Instrument token not found for {symbol} on {exch_seg}: {e}")
         return None
 
-# ========== Fetch Historical Data ==========
+# Historical candle data
 def get_historical_data(token, interval, from_date, to_date, exchange="NSE"):
     params = {
         "exchange": exchange,
@@ -56,24 +55,24 @@ def get_historical_data(token, interval, from_date, to_date, exchange="NSE"):
         "todate": to_date.strftime('%Y-%m-%d %H:%M')
     }
     try:
-        data = obj.getCandleData(params)
-        candles = data['data']
-        df = pd.DataFrame(candles, columns=["datetime", "open", "high", "low", "close", "volume"])
+        response = obj.getCandleData(params)
+        data = response.get("data", [])
+        df = pd.DataFrame(data, columns=["datetime", "open", "high", "low", "close", "volume"])
         df["datetime"] = pd.to_datetime(df["datetime"])
         df[["open", "high", "low", "close", "volume"]] = df[["open", "high", "low", "close", "volume"]].astype(float)
         return df
     except Exception as e:
-        print(f"[ERROR] Historical data fetch failed: {e}")
+        print(f"Error fetching historical data: {e}")
         return pd.DataFrame()
 
-# ========== Get LTP ==========
-def get_ltp(symbol, exchange="NSE"):
-    token = get_instrument_token(instruments_df, symbol, exchange)
+# LTP fetcher
+def get_ltp(symbol, exch_seg="NSE"):
+    token = get_instrument_token(symbol, exch_seg)
     if not token:
         return None
     try:
-        response = obj.ltpData(exchange=exchange, tradingsymbol=symbol, symboltoken=token)
-        return float(response['data']['ltp'])
+        ltp_data = obj.ltpData(exchange=exch_seg, tradingsymbol=symbol, symboltoken=token)
+        return float(ltp_data["data"]["ltp"])
     except Exception as e:
-        print(f"[ERROR] Failed to get LTP for {symbol}: {e}")
+        print(f"Error fetching LTP: {e}")
         return None
