@@ -1,69 +1,87 @@
 import os
+import pyotp
 import pandas as pd
 from SmartApi.smartConnect import SmartConnect
+from datetime import datetime, timedelta
 
-# Load credentials from Render environment variables
+# Load environment variables
 api_key = os.getenv("ANGEL_API_KEY")
 client_code = os.getenv("ANGEL_CLIENT_CODE")
 password = os.getenv("ANGEL_PASSWORD")
-totp = os.getenv("ANGEL_TOTP")
+totp_secret = os.getenv("ANGEL_TOTP_SECRET")  # 26-character secret
 
-# Check if any variable is missing
-if not all([api_key, client_code, password, totp]):
-    raise Exception("Missing one or more required environment variables (ANGEL_API_KEY, CLIENT_CODE, PASSWORD, TOTP).")
+# Validate all required env vars are set
+if not all([api_key, client_code, password, totp_secret]):
+    raise Exception("Missing one or more required environment variables: ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PASSWORD, ANGEL_TOTP_SECRET")
 
-# Create SmartConnect object
+# Generate TOTP from 26-digit secret
+totp = pyotp.TOTP(totp_secret).now()
+
+# Create API object and login
 obj = SmartConnect(api_key=api_key)
+session = obj.generateSession(client_code, password, totp)
 
-# Try to login and validate response
-try:
-    session = obj.generateSession(client_code, password, totp)
-    if not isinstance(session, dict) or 'status' not in session:
-        raise Exception(f"Invalid login response: {session}")
-    if session['status'] != True:
-        raise Exception(f"Login failed with message: {session.get('message', 'No message')}")
-except Exception as e:
-    raise Exception(f"Angel One login error: {e}")
+if not session or 'status' not in session or session['status'] != True:
+    raise Exception(f"Angel One login failed! Response: {session}")
 
-# (Optional) fetch profile
-user_profile = obj.getProfile(session["data"]["refreshToken"])
+# Save tokens
+auth_token = session['data']['jwtToken']
+refresh_token = session['data']['refreshToken']
+feed_token = obj.getfeedToken()
 
-# Load instrument file
+# Load instruments CSV (must be in same directory or give correct path)
 instruments_df = pd.read_csv("instruments.csv")
 
-# Utility: Token from symbol
-def get_instrument_token(symbol: str) -> str:
-    row = instruments_df[instruments_df['tradingsymbol'] == symbol]
-    return str(row['token'].values[0]) if not row.empty else None
-
-# Utility: LTP
-def get_ltp(symbol: str, exchange: str = "NSE") -> float:
-    token = get_instrument_token(symbol)
-    if not token:
-        return None
+# Utility: Get token by symbol and exchange
+def get_instrument_token(symbol, exchange):
     try:
-        ltp_data = obj.ltpData(exchange=exchange, tradingsymbol=symbol, symboltoken=token)
-        return ltp_data["data"]["ltp"]
+        row = instruments_df[
+            (instruments_df["name"] == symbol) & (instruments_df["exchange"] == exchange)
+        ].iloc[0]
+        return str(row["token"])
     except Exception as e:
-        print(f"LTP fetch error: {e}")
+        print(f"Error getting token for {symbol}: {e}")
         return None
 
-# Utility: Historical data
-def get_historical_data(symbol, interval="FIFTEEN_MINUTE", days=1, exchange="NSE"):
-    token = get_instrument_token(symbol)
+# Utility: Get historical candle data
+def get_historical_data(symbol, exchange, interval="FIVE_MINUTE", days=5):
+    token = get_instrument_token(symbol, exchange)
     if not token:
         return []
+
+    to_date = datetime.now()
+    from_date = to_date - timedelta(days=days)
+
     params = {
         "exchange": exchange,
         "symboltoken": token,
         "interval": interval,
-        "fromdate": pd.Timestamp.now() - pd.Timedelta(days=days),
-        "todate": pd.Timestamp.now(),
-        "tradingsymbol": symbol
+        "fromdate": from_date.strftime('%Y-%m-%d %H:%M'),
+        "todate": to_date.strftime('%Y-%m-%d %H:%M')
     }
+
     try:
-        candles = obj.getCandleData(params)
-        return candles.get("data", [])
+        data = obj.getCandleData(params)
+        return data['data']
     except Exception as e:
-        print(f"Historical fetch error: {e}")
+        print(f"Error fetching historical data: {e}")
         return []
+
+# Utility: Get LTP
+def get_ltp(symbol, exchange):
+    token = get_instrument_token(symbol, exchange)
+    if not token:
+        return None
+
+    params = {
+        "exchange": exchange,
+        "tradingsymbol": symbol,
+        "symboltoken": token
+    }
+
+    try:
+        ltp_data = obj.ltpData(params)
+        return float(ltp_data['data']['ltp'])
+    except Exception as e:
+        print(f"Error fetching LTP: {e}")
+        return None
