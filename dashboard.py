@@ -1,48 +1,45 @@
+# dashboard.py
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
 from angel_login import get_weekly_token, get_historical_data, get_ltp
 
-# Streamlit UI setup
 st.set_page_config(page_title="FnO Signal Dashboard", layout="wide")
 st.title("Live FnO Trading Signal Dashboard")
 
-# Sidebar selection
-instrument = st.selectbox("Select Instrument", ["NIFTY", "BANKNIFTY"])
-timeframe = st.selectbox("Select Timeframe", ["ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE"])
+symbol = st.selectbox("Select Instrument", ["NIFTY", "BANKNIFTY"])
+timeframe = st.selectbox("Select Timeframe", ["ONE_MINUTE", "FIFTEEN_MINUTE"])
 
-# Fetch instrument token automatically for current week's expiry
-instrument_token = get_weekly_token(instrument)
-if not instrument_token:
-    st.error("Instrument token not found for weekly expiry.")
+# Token fetch
+try:
+    token, trading_symbol = get_weekly_token(symbol)
+except Exception as e:
+    st.error(f"Token Error: {e}")
     st.stop()
 
-# Time range for historical data
+# Date range
 from_date = datetime.now() - timedelta(days=1)
 to_date = datetime.now()
 
-# Fetch historical data
-with st.spinner("Fetching live data..."):
-    df = get_historical_data(instrument_token, timeframe, from_date, to_date)
-    if df is None or len(df) == 0:
-        st.error("No historical data returned.")
+# Historical data
+with st.spinner("Fetching data..."):
+    try:
+        candles = get_historical_data(token, timeframe, from_date, to_date)
+        df = pd.DataFrame(candles, columns=["datetime", "open", "high", "low", "close", "volume"])
+        df["datetime"] = pd.to_datetime(df["datetime"])
+        df["EMA_5"] = df["close"].ewm(span=5).mean()
+        df["EMA_20"] = df["close"].ewm(span=20).mean()
+        df["Signal"] = df.apply(lambda row: "BUY" if row["EMA_5"] > row["EMA_20"] else "SELL", axis=1)
+    except Exception as e:
+        st.error(f"Data Error: {e}")
         st.stop()
 
-# Indicator logic (EMA crossover)
-df['EMA_5'] = df['close'].ewm(span=5).mean()
-df['EMA_20'] = df['close'].ewm(span=20).mean()
-df['Signal'] = df.apply(
-    lambda row: "BUY" if row['EMA_5'] > row['EMA_20'] else "SELL", axis=1
-)
+# LTP
+ltp = get_ltp(token)
 
-# Get current LTP
-ltp = get_ltp(instrument)
-
-# Show results
-latest_signal = df.iloc[-1]["Signal"]
-latest_close = df.iloc[-1]["close"]
-
-st.subheader(f"Signal: **{latest_signal}**")
-st.metric("LTP", value=ltp if ltp else "N/A")
+# Display
+st.subheader(f"Trading Symbol: {trading_symbol}")
+st.metric("LTP", value=ltp)
+st.subheader(f"Signal: {df.iloc[-1]['Signal']}")
 st.line_chart(df.set_index("datetime")[["close", "EMA_5", "EMA_20"]])
-st.dataframe(df.tail(10)[["datetime", "open", "high", "low", "close", "EMA_5", "EMA_20", "Signal"]])
+st.dataframe(df.tail(10))
