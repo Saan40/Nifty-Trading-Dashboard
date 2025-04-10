@@ -1,41 +1,74 @@
 import streamlit as st
-from datetime import datetime, timedelta
-from angel_login import get_weekly_token, get_historical_data, get_ltp
+import pandas as pd
+import datetime
+from utils import get_instrument_token
+from angel_login import smart_api, instruments_df, get_ltp, get_historical_candles
 
-st.set_page_config(page_title="FnO Signal Dashboard", layout="wide")
-st.title("Live FnO Trading Signal Dashboard")
+st.set_page_config(layout="wide", page_title="FnO Signal Dashboard")
 
-symbol = st.selectbox("Select Instrument", ["NIFTY", "BANKNIFTY"])
-timeframe = st.selectbox("Select Timeframe", ["ONE_MINUTE", "FIVE_MINUTE", "FIFTEEN_MINUTE"])
+st.title("FnO Signal Dashboard")
 
-# Get instrument token
-try:
-    instrument_token = get_weekly_token(symbol)
-except Exception as e:
-    st.error(f"Token Error: {e}")
+symbol = st.selectbox("Select Symbol", ["NIFTY", "BANKNIFTY"])
+interval = st.selectbox("Select Interval", ["FIVE_MINUTE", "FIFTEEN_MINUTE", "ONE_HOUR", "ONE_DAY"])
+
+# Calculate expiry and get token
+token_info = get_instrument_token(symbol, instruments_df)
+if not token_info:
+    st.error("Instrument token not found for symbol.")
     st.stop()
 
-# Set date range for candles
-from_date = datetime.now() - timedelta(days=1)
-to_date = datetime.now()
+token = token_info['token']
+exchange = token_info['exch_seg']
 
-# Fetch data
-try:
-    df = get_historical_data(instrument_token, interval=timeframe, from_date=from_date, to_date=to_date)
-except Exception as e:
-    st.error(f"Data error: {e}")
+# Define historical time range
+now = datetime.datetime.now()
+if interval == "ONE_DAY":
+    from_date = now - datetime.timedelta(days=60)
+elif interval == "ONE_HOUR":
+    from_date = now - datetime.timedelta(days=15)
+elif interval == "FIFTEEN_MINUTE":
+    from_date = now - datetime.timedelta(days=7)
+elif interval == "FIVE_MINUTE":
+    from_date = now - datetime.timedelta(days=2)
+else:
+    from_date = now - datetime.timedelta(days=1)
+
+to_date = now
+
+# Fetch historical data
+df = get_historical_candles(exchange, token, interval, from_date, to_date)
+
+if df is None or df.empty:
+    st.error("No candle data received. Please check token or date range.")
     st.stop()
 
-# Simple indicators
-df['EMA_5'] = df['close'].ewm(span=5).mean()
-df['EMA_20'] = df['close'].ewm(span=20).mean()
-df['Signal'] = df.apply(lambda row: "BUY" if row['EMA_5'] > row['EMA_20'] else "SELL", axis=1)
+if len(df) < 10:
+    st.warning(f"Only {len(df)} candles received. Not enough for signal generation.")
+    st.dataframe(df)
+    st.stop()
 
-latest_signal = df.iloc[-1]["Signal"]
-ltp = get_ltp(symbol)
+# Calculate EMAs
+df['EMA_5'] = df['close'].ewm(span=5, adjust=False).mean()
+df['EMA_20'] = df['close'].ewm(span=20, adjust=False).mean()
 
-# Show output
-st.subheader(f"Signal: **{latest_signal}**")
-st.metric("LTP", value=ltp)
-st.line_chart(df.set_index("datetime")[["close", "EMA_5", "EMA_20"]])
-st.dataframe(df.tail(10)[["datetime", "open", "high", "low", "close", "EMA_5", "EMA_20", "Signal"]])
+# Generate signal
+if df['EMA_5'].iloc[-1] > df['EMA_20'].iloc[-1]:
+    signal = "BUY"
+elif df['EMA_5'].iloc[-1] < df['EMA_20'].iloc[-1]:
+    signal = "SELL"
+else:
+    signal = "HOLD"
+
+ltp = get_ltp(exchange, token)
+
+# Display results
+st.header(f"Signal: {signal}")
+st.subheader(f"LTP\n{ltp}")
+
+# Line chart
+chart_data = df[["close", "EMA_5", "EMA_20"]].dropna()
+st.line_chart(chart_data)
+
+# Show table
+df['Signal'] = signal
+st.dataframe(df.tail(1)[["high", "low", "close", "EMA_5", "EMA_20", "Signal"]])
