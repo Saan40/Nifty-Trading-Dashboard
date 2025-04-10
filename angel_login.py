@@ -1,75 +1,59 @@
 import os
-import pyotp
 import pandas as pd
-from datetime import datetime, timedelta
+import pyotp
+import logging
 from SmartApi.smartConnect import SmartConnect
+from dotenv import load_dotenv
 
 # Load environment variables
-api_key = os.getenv("ANGEL_API_KEY")
-client_code = os.getenv("ANGEL_CLIENT_CODE")
-password = os.getenv("ANGEL_PASSWORD")
-totp_secret = os.getenv("ANGEL_TOTP_SECRET")
+load_dotenv()
 
-if not all([api_key, client_code, password, totp_secret]):
-    raise Exception("Missing one or more required environment variables")
+# Logger
+logging.basicConfig(level=logging.INFO)
 
-# Generate TOTP and login
+client_code = os.getenv("CLIENT_CODE")
+password = os.getenv("PASSWORD")
+totp_secret = os.getenv("TOTP_SECRET")
+api_key = os.getenv("API_KEY")
+
+# Create SmartConnect object
+smart_api = SmartConnect(api_key)
+
+# TOTP
 totp = pyotp.TOTP(totp_secret).now()
-obj = SmartConnect(api_key=api_key)
-session = obj.generateSession(client_code, password, totp)
-
-if not session or 'status' not in session or session['status'] != True:
-    raise Exception(f"Angel login failed: {session}")
-
-auth_token = session['data']['jwtToken']
-refresh_token = session['data']['refreshToken']
-feed_token = obj.getfeedToken()
+data = smart_api.generateSession(client_code, password, totp)
 
 # Load instruments.csv
 instruments_df = pd.read_csv("instruments.csv")
 
-# Auto-token selection for current week expiry
-def get_weekly_token(symbol):
-    df = instruments_df.copy()
-    df = df[df['exch_seg'] == 'NFO']
-    df = df[df['name'] == symbol]
-    df['expiry'] = pd.to_datetime(df['expiry'], errors='coerce')
-    today = pd.Timestamp.today()
-    df = df[df['expiry'] >= today]
-
-    if df.empty:
-        raise Exception(f"No future contracts found for {symbol}")
-
-    nearest = df.sort_values('expiry').iloc[0]
-    return str(nearest['token'])
-
-# Historical data fetcher
-def get_historical_data(token, interval, from_date, to_date, exchange="NFO"):
-    params = {
-        "exchange": exchange,
-        "symboltoken": str(token),
-        "interval": interval,
-        "fromdate": from_date.strftime('%Y-%m-%d %H:%M'),
-        "todate": to_date.strftime('%Y-%m-%d %H:%M')
-    }
-    response = obj.getCandleData(params)
-    candles = response.get('data')
-    if not candles:
-        raise Exception("No candle data received.")
-    df = pd.DataFrame(candles, columns=["datetime", "open", "high", "low", "close", "volume"])
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    return df
-
-# LTP fetcher
-def get_ltp(symbol, exchange="NFO"):
-    token = get_weekly_token(symbol)
+# Utility to get LTP
+def get_ltp(exchange, token):
     try:
-        response = obj.ltpData(
-            exchange=exchange,
-            tradingsymbol=symbol,
-            symboltoken=token
-        )
-        return float(response['data']['ltp'])
+        ltp_data = smart_api.ltpData(exchange=exchange, tradingsymbol=None, symboltoken=str(token))
+        return float(ltp_data["data"]["ltp"])
     except Exception as e:
-        print(f"LTP error for {symbol}: {e}")
+        logging.error(f"LTP fetch failed: {e}")
+        return None
+
+# Utility to get historical candles
+def get_historical_candles(exchange, token, interval, from_date, to_date):
+    try:
+        data = smart_api.getCandleData(
+            token=str(token),
+            interval=interval,
+            fromdate=from_date.strftime('%Y-%m-%d %H:%M'),
+            todate=to_date.strftime('%Y-%m-%d %H:%M')
+        )
+        candles = data['data']
+        if not candles:
+            logging.warning("No candles returned from API.")
+            return None
+
+        df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
+        df.set_index('timestamp', inplace=True)
+        return df
+
+    except Exception as e:
+        logging.error(f"Error fetching historical data: {e}")
         return None
