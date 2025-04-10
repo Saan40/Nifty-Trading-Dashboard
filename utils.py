@@ -1,40 +1,57 @@
 import pandas as pd
-import datetime
+import numpy as np
 
-def get_instrument_token(symbol, instruments_df):
-    """
-    Finds the nearest upcoming weekly expiry token for the given symbol
-    (NIFTY or BANKNIFTY) from the instruments DataFrame.
+# --- Indicators ---
+def calculate_indicators(df):
+    df['EMA_5'] = df['close'].ewm(span=5).mean()
+    df['EMA_20'] = df['close'].ewm(span=20).mean()
+    df['ATR'] = compute_atr(df, period=14)
+    return df
 
-    Parameters:
-        symbol (str): e.g., "NIFTY" or "BANKNIFTY"
-        instruments_df (pd.DataFrame): instrument master with trading_symbol, token, exch_seg
+def compute_atr(df, period=14):
+    df['H-L'] = abs(df['high'] - df['low'])
+    df['H-PC'] = abs(df['high'] - df['close'].shift(1))
+    df['L-PC'] = abs(df['low'] - df['close'].shift(1))
+    tr = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+    atr = tr.rolling(window=period).mean()
+    return atr
 
-    Returns:
-        dict: {'token': ..., 'exch_seg': ...} or None if not found
-    """
-    today = datetime.date.today()
+# --- Candlestick Patterns ---
+def identify_candlestick_patterns(df):
+    df['bullish_engulfing'] = (
+        (df['close'].shift(1) < df['open'].shift(1)) &
+        (df['close'] > df['open']) &
+        (df['open'] < df['close'].shift(1)) &
+        (df['close'] > df['open'].shift(1))
+    )
+    df['bearish_engulfing'] = (
+        (df['close'].shift(1) > df['open'].shift(1)) &
+        (df['close'] < df['open']) &
+        (df['open'] > df['close'].shift(1)) &
+        (df['close'] < df['open'].shift(1))
+    )
+    return df
 
-    # Filter symbol and NFO segment
-    expiry_range = instruments_df[
-        (instruments_df['trading_symbol'].str.startswith(symbol)) &
-        (instruments_df['exch_seg'] == 'NFO')
-    ].copy()
+# --- Signal Logic ---
+def get_signal(df):
+    latest = df.iloc[-1]
+    if latest['EMA_5'] > latest['EMA_20']:
+        return "BUY"
+    elif latest['EMA_5'] < latest['EMA_20']:
+        return "SELL"
+    else:
+        return "HOLD"
 
-    if expiry_range.empty:
-        return None
-
-    # Extract expiry date from trading_symbol
-    expiry_range['expiry_date'] = expiry_range['trading_symbol'].str.extract(r'(\d{2}[A-Z]{3}\d{2})')
-    expiry_range['expiry_date'] = pd.to_datetime(expiry_range['expiry_date'], format='%d%b%y', errors='coerce')
-    expiry_range = expiry_range.dropna(subset=['expiry_date'])
-
-    upcoming = expiry_range[expiry_range['expiry_date'] >= pd.Timestamp(today)]
-    if upcoming.empty:
-        return None
-
-    nearest = upcoming.sort_values('expiry_date').iloc[0]
-    return {
-        "token": nearest['token'],
-        "exch_seg": nearest['exch_seg']
-    }
+# --- TP/SL Calculation ---
+def calculate_tp_sl(price, signal, atr):
+    if signal == "BUY":
+        entry = price
+        sl = price - (atr * 1.5)
+        tp = price + (atr * 2)
+    elif signal == "SELL":
+        entry = price
+        sl = price + (atr * 1.5)
+        tp = price - (atr * 2)
+    else:
+        return None, None, None
+    return round(entry, 2), round(tp, 2), round(sl, 2)
