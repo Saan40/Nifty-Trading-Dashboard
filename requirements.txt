@@ -8,3 +8,4 @@ requests
 ta
 logzero
 websocket-client
+plotly
