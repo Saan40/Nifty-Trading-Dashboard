@@ -1,53 +1,75 @@
 import pandas as pd
+import numpy as np
 
-# Signal logic using EMA crossover
-def get_signal(df):
-    df['EMA_5'] = df['close'].ewm(span=5).mean()
-    df['EMA_20'] = df['close'].ewm(span=20).mean()
+# Calculate EMA, MACD, RSI, and ATR without TA-Lib
+def calculate_indicators(df):
+    df['EMA_9'] = df['close'].ewm(span=9, adjust=False).mean()
+    df['EMA_21'] = df['close'].ewm(span=21, adjust=False).mean()
 
-    if df['EMA_5'].iloc[-1] > df['EMA_20'].iloc[-1] and df['EMA_5'].iloc[-2] <= df['EMA_20'].iloc[-2]:
-        return "BUY"
-    elif df['EMA_5'].iloc[-1] < df['EMA_20'].iloc[-1] and df['EMA_5'].iloc[-2] >= df['EMA_20'].iloc[-2]:
-        return "SELL"
+    df['MACD'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
+    df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+
+    delta = df['close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.rolling(window=14).mean()
+    avg_loss = loss.rolling(window=14).mean()
+    rs = avg_gain / avg_loss
+    df['RSI'] = 100 - (100 / (1 + rs))
+
+    df['H-L'] = abs(df['high'] - df['low'])
+    df['H-PC'] = abs(df['high'] - df['close'].shift(1))
+    df['L-PC'] = abs(df['low'] - df['close'].shift(1))
+    tr = df[['H-L', 'H-PC', 'L-PC']].max(axis=1)
+    df['ATR'] = tr.rolling(window=14).mean()
+
+    return df
+
+# Signal logic: simple candlestick + MACD combo
+def generate_signal(df):
+    if len(df) < 2:
+        return "WAIT"
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
+
+    bullish = (
+        prev['close'] < prev['open'] and
+        latest['close'] > latest['open'] and
+        latest['close'] > prev['open'] and
+        latest['open'] < prev['close'] and
+        latest['MACD'] > latest['MACD_signal']
+    )
+
+    bearish = (
+        prev['close'] > prev['open'] and
+        latest['close'] < latest['open'] and
+        latest['close'] < prev['open'] and
+        latest['open'] > prev['close'] and
+        latest['MACD'] < latest['MACD_signal']
+    )
+
+    if bullish:
+        return "CALL"
+    elif bearish:
+        return "PUT"
     else:
         return "HOLD"
 
-# TP/SL calculator based on recent candle size or ATR logic
-def calculate_tp_sl(df, signal, risk_ratio=1.5):
-    if df.empty or signal not in ["BUY", "SELL"]:
-        return None, None, None
+# Take Profit / Stop Loss calculation based on ATR or candle size
+def calculate_tp_sl(df, ltp, direction, risk_pct=0.1):
+    atr = df.iloc[-1]['ATR']
+    body_size = abs(df.iloc[-1]['close'] - df.iloc[-1]['open'])
+    buffer = max(atr, body_size)
 
-    entry = df['close'].iloc[-1]
-    candle_range = df['high'].iloc[-1] - df['low'].iloc[-1]
+    risk_amount = ltp * risk_pct
 
-    if signal == "BUY":
-        sl = entry - candle_range
-        tp = entry + candle_range * risk_ratio
-    elif signal == "SELL":
-        sl = entry + candle_range
-        tp = entry - candle_range * risk_ratio
+    if direction == "CALL":
+        sl = ltp - buffer
+        tp = ltp + (risk_amount * 2)
+    elif direction == "PUT":
+        sl = ltp + buffer
+        tp = ltp - (risk_amount * 2)
     else:
-        tp, sl = None, None
+        sl, tp = None, None
 
-    return round(entry, 2), round(tp, 2), round(sl, 2)
-
-# Wrapper to convert raw candle data into DataFrame
-def fetch_historical_data(api, token, interval, from_date, to_date, exchange="NFO"):
-    params = {
-        "exchange": exchange,
-        "symboltoken": str(token),
-        "interval": interval,
-        "fromdate": from_date.strftime('%Y-%m-%d %H:%M'),
-        "todate": to_date.strftime('%Y-%m-%d %H:%M')
-    }
-    try:
-        response = api.getCandleData(params)
-        candles = response.get("data", [])
-        if not candles:
-            return pd.DataFrame()
-        df = pd.DataFrame(candles, columns=["datetime", "open", "high", "low", "close", "volume"])
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        return df
-    except Exception as e:
-        print(f"Error fetching candle data: {e}")
-        return pd.DataFrame()
+    return round(tp, 2), round(sl, 2)
