@@ -1,79 +1,88 @@
-# angel_login.py
+# --- angel_login.py ---
 import os
 import pyotp
 import pandas as pd
-from dotenv import load_dotenv
 from SmartApi.smartConnect import SmartConnect
-
-load_dotenv()
+from datetime import datetime
 
 # Load environment variables
 api_key = os.getenv("ANGEL_API_KEY")
 client_code = os.getenv("ANGEL_CLIENT_CODE")
 password = os.getenv("ANGEL_PASSWORD")
-totp_secret = os.getenv("ANGEL_TOTP_SECRET")  # 26-character TOTP secret
+totp_secret = os.getenv("ANGEL_TOTP_SECRET")
 
-# Validate all required env vars are set
+# Validate environment
 if not all([api_key, client_code, password, totp_secret]):
-    raise Exception("Missing one or more required environment variables: ANGEL_API_KEY, ANGEL_CLIENT_CODE, ANGEL_PASSWORD, ANGEL_TOTP_SECRET")
+    raise Exception("Missing one or more required environment variables.")
 
-# Generate TOTP and login
+# Generate TOTP
 totp = pyotp.TOTP(totp_secret).now()
 smart_api = SmartConnect(api_key=api_key)
 session = smart_api.generateSession(client_code, password, totp)
 
-if not session or session.get("status") != True:
-    raise Exception(f"Login failed! Response: {session}")
+if 'status' not in session or not session['status']:
+    raise Exception(f"Login failed: {session}")
 
-# Tokens
+auth_token = session['data']['jwtToken']
 feed_token = smart_api.getfeedToken()
-auth_token = session["data"]["jwtToken"]
 
-# Load instruments
 instruments_df = pd.read_csv("instruments.csv")
 
-# Clean & standardize columns
-instruments_df.columns = instruments_df.columns.str.strip().str.lower()
+# Get nearest expiry token for NIFTY/BANKNIFTY
 
-# Auto-select latest weekly expiry instrument token (NIFTY/BANKNIFTY)
 def get_instrument_token(symbol):
-    df = instruments_df.copy()
-    df = df[df['exch_seg'] == 'NFO']
-    df = df[df['name'] == symbol]
+    today = datetime.today()
+    df = instruments_df[
+        (instruments_df['name'] == symbol)
+        & (instruments_df['exch_seg'] == 'NFO')
+        & (instruments_df['instrumenttype'] == 'OPTIDX')
+    ].copy()
+
     df['expiry'] = pd.to_datetime(df['expiry'], errors='coerce')
-    df = df[df['expiry'] >= pd.Timestamp.today()]
-    df = df.sort_values('expiry')
+    df = df[df['expiry'] >= today]
 
     if df.empty:
-        raise Exception("Instrument token not found.")
+        raise ValueError("No valid expiry found for given symbol")
 
-    atm = df.iloc[len(df)//2]  # pick a mid strike option
+    nearest = df.sort_values('expiry').iloc[0]
     return {
-        "token": str(atm['token']),
-        "symbol": atm['trading_symbol'],
-        "exchange": atm['exch_seg']
+        'symbol': nearest['symbol'],
+        'token': nearest['token'],
+        'expiry': nearest['expiry'],
+        'strike': nearest['strike'] / 100,
+        'exch_seg': nearest['exch_seg']
     }
 
-# Get historical candle data
-def get_historical_data(token, interval, from_date, to_date, exchange="NFO"):
+# Get ATM Option Token for CALL/PUT
+def get_option_token(symbol, strike, option_type, expiry):
+    opt_symbol = f"{symbol}{expiry.strftime('%d%b%y').upper()}{int(strike)}{option_type}"
+    row = instruments_df[(instruments_df['symbol'] == opt_symbol)]
+    if not row.empty:
+        return row.iloc[0]['token']
+    return None
+
+# Get historical OHLC data
+def get_historical_data(token, interval, from_date, to_date):
     params = {
-        "exchange": exchange,
-        "symboltoken": token,
+        "exchange": "NFO",
+        "symboltoken": str(token),
         "interval": interval,
         "fromdate": from_date.strftime('%Y-%m-%d %H:%M'),
         "todate": to_date.strftime('%Y-%m-%d %H:%M')
     }
     response = smart_api.getCandleData(params)
-    return response['data'] if 'data' in response else None
+    candles = response.get("data")
+    if not candles:
+        raise Exception("No candle data received.")
+
+    df = pd.DataFrame(candles, columns=["datetime", "open", "high", "low", "close", "volume"])
+    df["datetime"] = pd.to_datetime(df["datetime"])
+    return df
 
 # Get LTP
-def get_ltp(symbol, exchange="NFO"):
+def get_ltp(symbol, token):
     try:
-        df = instruments_df[(instruments_df['trading_symbol'] == symbol) & (instruments_df['exch_seg'] == exchange)]
-        if df.empty:
-            return None
-        token = str(df.iloc[0]['token'])
-        ltp_response = smart_api.ltpData(exchange=exchange, tradingsymbol=symbol, symboltoken=token)
-        return float(ltp_response['data']['ltp'])
+        data = smart_api.ltpData("NFO", symbol, str(token))
+        return float(data['data']['ltp'])
     except:
         return None
