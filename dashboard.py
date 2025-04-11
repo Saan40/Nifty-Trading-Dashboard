@@ -1,99 +1,61 @@
+# dashboard.py
 import streamlit as st
 import pandas as pd
 from datetime import datetime, timedelta
+from angel_login import smart_api, instruments_df, get_ltp, get_option_token, get_nearest_expiry, get_historical_data
 import plotly.graph_objs as go
 
-from angel_login import smart_api, instruments_df, get_option_token
-from utils import calculate_indicators, generate_signal, calculate_tp_sl
+st.set_page_config(page_title="FnO Signal Dashboard", layout="wide")
 
-st.set_page_config("FnO Signal Dashboard", layout="wide")
+st.title("Live FnO Option Signal Dashboard")
 
-st.title("Live FnO Options Signal Dashboard")
-
-# User selections
 symbol = st.selectbox("Select Instrument", ["NIFTY", "BANKNIFTY"])
-timeframe = st.selectbox("Select Timeframe", ["5minute", "15minute"])
+interval = st.selectbox("Timeframe", ["5minute", "15minute"])
 
-# Get latest expiry option token
-option_info = get_option_token(symbol)
-if not option_info:
-    st.error("Token Error: instrument not found")
+ltp = get_ltp(symbol, exch_seg="NSE")
+if not ltp:
+    st.error("LTP fetch failed.")
     st.stop()
 
-token = option_info["token"]
-exchange = option_info["exch_seg"]
-tradingsymbol = option_info["symbol"]
+expiry = get_nearest_expiry(instruments_df, symbol)
+atm_strike = round(ltp / 50) * 50
 
-# Date range: last 2 days
+option_type = st.radio("Select Option Type", ["CE", "PE"])
+strike_type = "CE" if option_type == "CE" else "PE"
+
+option_token, trading_symbol = get_option_token(symbol, atm_strike, strike_type, expiry)
+
+if not option_token:
+    st.error("ATM option token not found.")
+    st.stop()
+
+from_date = datetime.now() - timedelta(days=2)
 to_date = datetime.now()
-from_date = to_date - timedelta(days=2)
 
-# Fetch data
-params = {
-    "exchange": exchange,
-    "symboltoken": str(token),
-    "interval": timeframe.upper(),
-    "fromdate": from_date.strftime("%Y-%m-%d %H:%M"),
-    "todate": to_date.strftime("%Y-%m-%d %H:%M"),
-}
-
-try:
-    raw_data = smart_api.getCandleData(params)
-    candles = raw_data.get("data", [])
-    if not candles:
-        st.error("Data error: No candle data received.")
-        st.stop()
-
-    df = pd.DataFrame(candles, columns=["datetime", "open", "high", "low", "close", "volume"])
-    df["datetime"] = pd.to_datetime(df["datetime"])
-    df = calculate_indicators(df)
-except Exception as e:
-    st.error(f"Data Fetch Error: {e}")
+raw = get_historical_data(option_token, interval, from_date, to_date)
+if not raw:
+    st.error("No candle data received.")
     st.stop()
 
-# Generate signal
-signal = generate_signal(df)
-ltp = df.iloc[-1]["close"]
-tp, sl = calculate_tp_sl(df, ltp, signal)
+df = pd.DataFrame(raw, columns=["datetime", "open", "high", "low", "close", "volume"])
+df["datetime"] = pd.to_datetime(df["datetime"])
+
+# Simple EMA-based signal
+df["EMA5"] = df["close"].ewm(span=5).mean()
+df["EMA20"] = df["close"].ewm(span=20).mean()
+df["Signal"] = df.apply(lambda row: "BUY" if row["EMA5"] > row["EMA20"] else "SELL", axis=1)
 
 # Display
-st.subheader(f"Signal: **{signal}**")
-st.metric("LTP", round(ltp, 2))
-st.metric("TP", tp)
-st.metric("SL", sl)
-
-# Plot chart with annotations
 fig = go.Figure()
+fig.add_trace(go.Candlestick(x=df["datetime"], open=df["open"], high=df["high"],
+                             low=df["low"], close=df["close"], name="Candles"))
+fig.add_trace(go.Scatter(x=df["datetime"], y=df["EMA5"], mode="lines", name="EMA5"))
+fig.add_trace(go.Scatter(x=df["datetime"], y=df["EMA20"], mode="lines", name="EMA20"))
+fig.update_layout(title=f"{symbol} {trading_symbol} - {interval}", xaxis_rangeslider_visible=False)
 
-fig.add_trace(go.Candlestick(
-    x=df["datetime"],
-    open=df["open"], high=df["high"],
-    low=df["low"], close=df["close"],
-    name="Candles"
-))
-
-fig.add_trace(go.Scatter(
-    x=df["datetime"], y=df["EMA_9"],
-    mode="lines", name="EMA 9", line=dict(color="blue")
-))
-fig.add_trace(go.Scatter(
-    x=df["datetime"], y=df["EMA_21"],
-    mode="lines", name="EMA 21", line=dict(color="orange")
-))
-
-# Add signal marker
-fig.add_trace(go.Scatter(
-    x=[df.iloc[-1]["datetime"]],
-    y=[ltp],
-    mode="markers+text",
-    marker=dict(size=12, color="green" if signal == "CALL" else "red"),
-    text=[f"{signal}"],
-    textposition="top center",
-    name="Signal"
-))
-
-fig.update_layout(height=600, title="Live Candle Chart with Signal", xaxis_rangeslider_visible=False)
 st.plotly_chart(fig, use_container_width=True)
 
-# Refresh every 30 seconds
-st.experimental_rerun()
+latest = df.iloc[-1]
+st.metric("Signal", latest["Signal"])
+st.metric("LTP", round(latest["close"], 2))
+st.write(df.tail(10))
