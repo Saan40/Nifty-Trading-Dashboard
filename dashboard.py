@@ -1,69 +1,37 @@
 import streamlit as st
 import pandas as pd
-import plotly.graph_objs as go
 from datetime import datetime, timedelta
-from angel_login import obj, instruments_df, get_instrument_token, get_ltp, get_historical_data
-from utils import get_signal, calculate_tp_sl
+from angel_login import get_instrument_token, get_historical_data, get_ltp
 
-st.set_page_config(page_title="FnO Signal Dashboard", layout="wide")
-st.title("Live FnO Trading Signal Dashboard")
+st.set_page_config("FnO Dashboard", layout="wide")
+st.title("Live FnO Signal Dashboard")
 
 symbol = st.selectbox("Select Instrument", ["NIFTY", "BANKNIFTY"])
-timeframe = st.selectbox("Select Timeframe", ["5minute", "15minute"])
+interval = st.selectbox("Select Timeframe", ["5minute", "15minute"])
 
-# Get instrument token
 token_info = get_instrument_token(symbol)
 if not token_info:
-    st.error("Token Error: Instrument token not found for the latest expiry")
+    st.error("Token Error: instrument not found")
     st.stop()
 
-instrument_token = token_info['token']
-exchange = token_info['exch_seg']
-
-# Date range
+from_date = datetime.now() - timedelta(days=1)
 to_date = datetime.now()
-from_date = to_date - timedelta(days=1)
 
-# Fetch historical data
-data = get_historical_data(token=instrument_token, interval=timeframe, from_date=from_date, to_date=to_date, exchange=exchange)
-if not data or 'data' not in data or not data['data']:
+df = get_historical_data(token_info, interval, from_date, to_date)
+if df is None or df.empty:
     st.error("Data error: No candle data received.")
     st.stop()
 
-# Prepare DataFrame
-df = pd.DataFrame(data['data'], columns=['datetime', 'open', 'high', 'low', 'close', 'volume'])
-df['datetime'] = pd.to_datetime(df['datetime'])
-df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-df = df.tail(50).copy()  # Keep last 50 candles
+# Simple EMA logic
+df['EMA5'] = df['close'].ewm(span=5).mean()
+df['EMA20'] = df['close'].ewm(span=20).mean()
+df['Signal'] = df.apply(lambda row: "BUY" if row['EMA5'] > row['EMA20'] else "SELL", axis=1)
 
-# Get signal and TP/SL
-signal, entry, tp, sl = get_signal(df)
-ltp = get_ltp(symbol)
+ltp = get_ltp(token_info)
+signal = df.iloc[-1]["Signal"]
 
-# Show signal and chart
-st.subheader(f"Signal: **{signal}**")
+st.metric("Signal", value=signal)
 st.metric("LTP", value=ltp)
-if signal in ["BUY", "SELL"]:
-    st.write(f"**Entry**: {entry:.2f} | **Target (TP)**: {tp:.2f} | **Stop Loss (SL)**: {sl:.2f}")
 
-# Plotting candlestick + signal + TP/SL
-fig = go.Figure()
-fig.add_trace(go.Candlestick(x=df['datetime'], open=df['open'], high=df['high'],
-                             low=df['low'], close=df['close'], name='Candles'))
-
-if signal == "BUY":
-    fig.add_trace(go.Scatter(x=[df.iloc[-1]['datetime']], y=[entry], mode='markers+text', name='BUY',
-                             marker=dict(color='green', size=12), text=['BUY'], textposition="top right"))
-    fig.add_hline(y=tp, line_dash="dash", line_color="green", annotation_text="TP", annotation_position="top right")
-    fig.add_hline(y=sl, line_dash="dash", line_color="red", annotation_text="SL", annotation_position="bottom right")
-elif signal == "SELL":
-    fig.add_trace(go.Scatter(x=[df.iloc[-1]['datetime']], y=[entry], mode='markers+text', name='SELL',
-                             marker=dict(color='red', size=12), text=['SELL'], textposition="top right"))
-    fig.add_hline(y=tp, line_dash="dash", line_color="red", annotation_text="TP", annotation_position="bottom right")
-    fig.add_hline(y=sl, line_dash="dash", line_color="green", annotation_text="SL", annotation_position="top right")
-
-fig.update_layout(title="Live Candlestick Chart", xaxis_title="Time", yaxis_title="Price",
-                  xaxis_rangeslider_visible=False, template="plotly_dark")
-st.plotly_chart(fig, use_container_width=True)
-
+st.line_chart(df.set_index("datetime")[["close", "EMA5", "EMA20"]])
 st.dataframe(df.tail(10))
