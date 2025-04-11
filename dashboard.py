@@ -14,15 +14,12 @@ from utils import calculate_indicators, generate_signal, calculate_tp_sl
 st.set_page_config(page_title="FnO Signal Dashboard", layout="wide")
 st.title("Live FnO Trading Signal Dashboard")
 
-# Sidebar options
 symbol = st.selectbox("Select Instrument", ["NIFTY", "BANKNIFTY"])
 timeframe = st.selectbox("Select Timeframe", ["5minute", "15minute"])
 
-# Dates
 to_date = datetime.now()
 from_date = to_date - timedelta(days=1)
 
-# Get LTP and ATM strike
 ltp = get_ltp(symbol, exch_seg="NFO")
 if not ltp:
     st.error("LTP fetch failed.")
@@ -31,7 +28,6 @@ if not ltp:
 strike = round(ltp / 50) * 50
 expiry = instruments_df[instruments_df['name'] == symbol]['expiry'].min()
 
-# Get ATM Option Token (CALL)
 call_option = get_option_token(symbol, strike, "CE", expiry)
 put_option = get_option_token(symbol, strike, "PE", expiry)
 
@@ -39,11 +35,9 @@ if not call_option or not put_option:
     st.error("Option token not found.")
     st.stop()
 
-# Choose which to show
 option_type = st.selectbox("Option Type", ["CALL", "PUT"])
 option_info = call_option if option_type == "CALL" else put_option
 
-# Historical data
 df = get_historical_data(
     token=option_info["token"],
     interval=timeframe,
@@ -56,12 +50,10 @@ if df is None or df.empty:
     st.error("Data error: No candle data received.")
     st.stop()
 
-# Indicators & Signal
 df = calculate_indicators(df)
 signal = generate_signal(df)
-tp, sl = calculate_tp_sl(df)
+tp, sl = calculate_tp_sl(ltp, df["ATR"].iloc[-1])
 
-# Chart
 fig = go.Figure()
 fig.add_trace(go.Candlestick(
     x=df['datetime'],
@@ -75,13 +67,11 @@ fig.add_trace(go.Scatter(x=df['datetime'], y=df['EMA_9'], line=dict(color='blue'
 fig.add_trace(go.Scatter(x=df['datetime'], y=df['EMA_21'], line=dict(color='orange'), name='EMA 21'))
 fig.update_layout(title=f"{symbol} {option_type} | Signal: {signal}", xaxis_rangeslider_visible=False)
 
-# Signal display
 st.subheader(f"Signal: **{signal}**")
 st.metric("LTP", value=ltp)
 st.metric("Strike", value=strike)
 st.metric("TP", value=tp)
 st.metric("SL", value=sl)
 
-# Chart + Table
 st.plotly_chart(fig, use_container_width=True)
 st.dataframe(df.tail(10)[["datetime", "open", "high", "low", "close", "EMA_9", "EMA_21", "Signal"]])
