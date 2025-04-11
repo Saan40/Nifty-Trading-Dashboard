@@ -1,64 +1,87 @@
-# dashboard.py
 import streamlit as st
 import pandas as pd
 import plotly.graph_objs as go
 from datetime import datetime, timedelta
-from angel_login import smart_api, instruments_df, get_instrument_token, get_option_token, get_ltp, get_historical_data
+from angel_login import (
+    smart_api,
+    instruments_df,
+    get_option_token,
+    get_ltp,
+    get_historical_data
+)
+from utils import calculate_indicators, generate_signal, calculate_tp_sl
 
 st.set_page_config(page_title="FnO Signal Dashboard", layout="wide")
 st.title("Live FnO Trading Signal Dashboard")
 
+# Sidebar options
 symbol = st.selectbox("Select Instrument", ["NIFTY", "BANKNIFTY"])
 timeframe = st.selectbox("Select Timeframe", ["5minute", "15minute"])
 
-# Get instrument token (ATM strike option auto selection)
-try:
-    spot_ltp = get_ltp(symbol)
-    spot_price = round(int(spot_ltp), -2)  # round to nearest 100
-    token_row = get_instrument_token(symbol)
-    expiry = token_row['expiry']
-    ce_token = get_option_token(symbol, spot_price, 'CE', expiry)
-    pe_token = get_option_token(symbol, spot_price, 'PE', expiry)
-except Exception as e:
-    st.error(f"Token Error: {e}")
-    st.stop()
-
-# Fetch historical data
-from_date = datetime.now() - timedelta(days=1)
+# Dates
 to_date = datetime.now()
+from_date = to_date - timedelta(days=1)
 
-try:
-    ce_df = get_historical_data(ce_token, timeframe, from_date, to_date)
-    pe_df = get_historical_data(pe_token, timeframe, from_date, to_date)
-except Exception as e:
-    st.error(f"Data error: {e}")
+# Get LTP and ATM strike
+ltp = get_ltp(symbol, exch_seg="NFO")
+if not ltp:
+    st.error("LTP fetch failed.")
     st.stop()
 
-# Signal logic (simple EMA-based example)
-ce_df['EMA_5'] = ce_df['close'].ewm(span=5).mean()
-ce_df['EMA_20'] = ce_df['close'].ewm(span=20).mean()
-ce_df['Signal'] = ce_df.apply(lambda row: 'BUY' if row['EMA_5'] > row['EMA_20'] else 'SELL', axis=1)
+strike = round(ltp / 50) * 50
+expiry = instruments_df[instruments_df['name'] == symbol]['expiry'].min()
 
-signal = ce_df.iloc[-1]['Signal']
-entry = ce_df.iloc[-1]['close']
-tp = round(entry * 1.01, 2)
-sl = round(entry * 0.99, 2)
+# Get ATM Option Token (CALL)
+call_option = get_option_token(symbol, strike, "CE", expiry)
+put_option = get_option_token(symbol, strike, "PE", expiry)
 
-# Display
-st.subheader(f"**{symbol}** - Signal: {signal}")
-st.metric("Entry", value=entry)
-st.metric("Target (TP)", value=tp)
-st.metric("Stop Loss (SL)", value=sl)
+if not call_option or not put_option:
+    st.error("Option token not found.")
+    st.stop()
+
+# Choose which to show
+option_type = st.selectbox("Option Type", ["CALL", "PUT"])
+option_info = call_option if option_type == "CALL" else put_option
+
+# Historical data
+df = get_historical_data(
+    token=option_info["token"],
+    interval=timeframe,
+    from_date=from_date,
+    to_date=to_date,
+    exchange=option_info["exch_seg"]
+)
+
+if df is None or df.empty:
+    st.error("Data error: No candle data received.")
+    st.stop()
+
+# Indicators & Signal
+df = calculate_indicators(df)
+signal = generate_signal(df)
+tp, sl = calculate_tp_sl(df)
 
 # Chart
 fig = go.Figure()
-fig.add_trace(go.Candlestick(x=ce_df['datetime'],
-                open=ce_df['open'], high=ce_df['high'],
-                low=ce_df['low'], close=ce_df['close'], name='CE Candle'))
-fig.add_trace(go.Scatter(x=ce_df['datetime'], y=ce_df['EMA_5'], name='EMA 5', line=dict(color='blue')))
-fig.add_trace(go.Scatter(x=ce_df['datetime'], y=ce_df['EMA_20'], name='EMA 20', line=dict(color='orange')))
+fig.add_trace(go.Candlestick(
+    x=df['datetime'],
+    open=df['open'],
+    high=df['high'],
+    low=df['low'],
+    close=df['close'],
+    name='Candles'
+))
+fig.add_trace(go.Scatter(x=df['datetime'], y=df['EMA_9'], line=dict(color='blue'), name='EMA 9'))
+fig.add_trace(go.Scatter(x=df['datetime'], y=df['EMA_21'], line=dict(color='orange'), name='EMA 21'))
+fig.update_layout(title=f"{symbol} {option_type} | Signal: {signal}", xaxis_rangeslider_visible=False)
 
-fig.update_layout(title="ATM CE Candlestick Chart", xaxis_rangeslider_visible=False, height=500)
+# Signal display
+st.subheader(f"Signal: **{signal}**")
+st.metric("LTP", value=ltp)
+st.metric("Strike", value=strike)
+st.metric("TP", value=tp)
+st.metric("SL", value=sl)
+
+# Chart + Table
 st.plotly_chart(fig, use_container_width=True)
-
-st.dataframe(ce_df.tail(10)[["datetime", "open", "high", "low", "close", "EMA_5", "EMA_20", "Signal"]])
+st.dataframe(df.tail(10)[["datetime", "open", "high", "low", "close", "EMA_9", "EMA_21", "Signal"]])
